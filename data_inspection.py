@@ -47,40 +47,46 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ============================================================================
-# DATA LOADING
+# DATA LOADING - OPTIMIZED
 # ============================================================================
 
+@st.cache_resource
+def get_duckdb_connection():
+    """Create a persistent DuckDB connection"""
+    return duckdb.connect()
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data():
-    """Load parquet file from Google Drive"""
+def download_file():
+    """Download file from Google Drive if needed"""
     output = "data.parquet"
     
-    # Download file if it doesn't exist
     if not os.path.exists(output):
         try:
             file_id = "1z4eiH8unaggA3hgQvTdGzHOf5iutd0A-"
             url = f"https://drive.google.com/uc?export=download&id={file_id}"
             gdown.download(url, output, quiet=False)
+            return output
         except Exception as e:
             st.error(f"Download failed: {str(e)}")
             return None
-    
-    # Read parquet file
-    try:
-        df = pd.read_parquet(output)
-        return df
-    except Exception as e:
-        st.error(f"Error reading file: {str(e)}")
-        return None
+    return output
+
+def load_data_lazy():
+    """Load parquet file path only - no data in memory"""
+    output = download_file()
+    if output and os.path.exists(output):
+        return output
+    return None
 
 # ============================================================================
-# DATABASE QUERIES
+# DATABASE QUERIES - OPTIMIZED TO WORK DIRECTLY ON FILE
 # ============================================================================
 
 @st.cache_data(ttl=1800)
-def get_session_stats(df):
-    """Calculate session statistics"""
-    query = '''
+def get_session_stats(parquet_path):
+    """Calculate session statistics directly from parquet"""
+    conn = get_duckdb_connection()
+    query = f'''
     WITH session_stats AS (
         SELECT
             miner_id,
@@ -88,7 +94,7 @@ def get_session_stats(df):
             MIN(shift_id) AS min_shift_id,
             MAX(shift_id) AS max_shift_id,
             EXTRACT(EPOCH FROM (MAX(last_ug) - MIN(last_ug))) / 3600 AS time_diff_hours
-        FROM df
+        FROM read_parquet('{parquet_path}')
         GROUP BY miner_id, ug_session_id
     )
     SELECT
@@ -97,12 +103,13 @@ def get_session_stats(df):
         COUNT(CASE WHEN min_shift_id != max_shift_id THEN 1 END) AS case3
     FROM session_stats
     '''
-    return duckdb.query(query).df()
+    return conn.execute(query).df()
 
 @st.cache_data(ttl=1800)
-def get_per_miner_stats(df):
+def get_per_miner_stats(parquet_path):
     """Get statistics per miner"""
-    query = '''
+    conn = get_duckdb_connection()
+    query = f'''
     WITH session_stats AS (
         SELECT
             miner_id,
@@ -111,7 +118,7 @@ def get_per_miner_stats(df):
             MAX(shift_id) AS max_shift_id,
             (MAX(shift_id) - MIN(shift_id) + 1) AS shifts_spanned,
             EXTRACT(EPOCH FROM (MAX(last_ug) - MIN(last_ug))) / 3600 AS time_diff_hours
-        FROM df
+        FROM read_parquet('{parquet_path}')
         GROUP BY miner_id, ug_session_id
     )
     SELECT
@@ -126,11 +133,12 @@ def get_per_miner_stats(df):
     GROUP BY miner_id
     ORDER BY miner_id
     '''
-    return duckdb.query(query).df()
+    return conn.execute(query).df()
 
 @st.cache_data(ttl=1800)
-def get_miner_details(df, miner_id):
+def get_miner_details(parquet_path, miner_id):
     """Get detailed session info for a miner"""
+    conn = get_duckdb_connection()
     query = f'''
     SELECT
         miner_id,
@@ -140,16 +148,17 @@ def get_miner_details(df, miner_id):
         MIN(last_ug) AS work_start,
         MAX(last_ug) AS work_end,
         EXTRACT(EPOCH FROM (MAX(last_ug) - MIN(last_ug))) / 3600 AS time_diff_hours
-    FROM df
+    FROM read_parquet('{parquet_path}')
     WHERE miner_id = {miner_id}
     GROUP BY miner_id, ug_session_id
     ORDER BY work_start DESC
     '''
-    return duckdb.query(query).df()
+    return conn.execute(query).df()
 
 @st.cache_data(ttl=1800)
-def get_shift_span_distribution(df, miner_id=None):
+def get_shift_span_distribution(parquet_path, miner_id=None):
     """Get distribution of shifts spanned"""
+    conn = get_duckdb_connection()
     where_clause = f"WHERE miner_id = {miner_id}" if miner_id else ""
     query = f'''
     WITH session_stats AS (
@@ -157,7 +166,7 @@ def get_shift_span_distribution(df, miner_id=None):
             miner_id,
             ug_session_id,
             (MAX(shift_id) - MIN(shift_id) + 1) AS shifts_spanned
-        FROM df
+        FROM read_parquet('{parquet_path}')
         {where_clause}
         GROUP BY miner_id, ug_session_id
     )
@@ -168,16 +177,17 @@ def get_shift_span_distribution(df, miner_id=None):
     GROUP BY shifts_spanned
     ORDER BY shifts_spanned
     '''
-    return duckdb.query(query).df()
+    return conn.execute(query).df()
 
 @st.cache_data(ttl=1800)
-def get_hourly_distribution(df):
+def get_hourly_distribution(parquet_path):
     """Get distribution of session durations"""
-    query = '''
+    conn = get_duckdb_connection()
+    query = f'''
     WITH session_stats AS (
         SELECT
             EXTRACT(EPOCH FROM (MAX(last_ug) - MIN(last_ug))) / 3600 AS time_diff_hours
-        FROM df
+        FROM read_parquet('{parquet_path}')
         GROUP BY miner_id, ug_session_id
     )
     SELECT
@@ -188,13 +198,27 @@ def get_hourly_distribution(df):
     GROUP BY hour_bucket
     ORDER BY hour_bucket
     '''
-    return duckdb.query(query).df()
+    return conn.execute(query).df()
+
+@st.cache_data(ttl=1800)
+def get_row_count(parquet_path):
+    """Get total row count from parquet"""
+    conn = get_duckdb_connection()
+    query = f"SELECT COUNT(*) as count FROM read_parquet('{parquet_path}')"
+    return conn.execute(query).df()['count'][0]
+
+@st.cache_data(ttl=1800)
+def get_miner_ids(parquet_path):
+    """Get list of unique miner IDs"""
+    conn = get_duckdb_connection()
+    query = f"SELECT DISTINCT miner_id FROM read_parquet('{parquet_path}') ORDER BY miner_id"
+    return conn.execute(query).df()['miner_id'].tolist()
 
 # ============================================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================================
 
-def show_overview_dashboard(df, stats):
+def show_overview_dashboard(parquet_path, stats):
     """Display the main overview dashboard"""
     st.header("📈 Session Overview")
     
@@ -263,7 +287,7 @@ def show_overview_dashboard(df, stats):
     st.markdown("---")
     st.subheader("⏱️ Session Duration Distribution")
     
-    duration_df = get_hourly_distribution(df)
+    duration_df = get_hourly_distribution(parquet_path)
     fig = px.bar(duration_df, x='hour_bucket', y='session_count',
                 labels={'hour_bucket': 'Session Duration (hours)', 
                        'session_count': 'Number of Sessions'},
@@ -272,12 +296,12 @@ def show_overview_dashboard(df, stats):
     fig.update_layout(height=400, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-def show_per_miner_analysis(df):
+def show_per_miner_analysis(parquet_path):
     """Display per miner analysis"""
     st.header("👤 Per Miner Analysis")
     
-    miner_stats_df = get_per_miner_stats(df)
-    miner_ids = sorted(df['miner_id'].unique().tolist())
+    miner_stats_df = get_per_miner_stats(parquet_path)
+    miner_ids = get_miner_ids(parquet_path)
     selected_miner = st.selectbox("Select Miner ID", miner_ids, index=0)
     
     if selected_miner:
@@ -306,7 +330,7 @@ def show_per_miner_analysis(df):
         
         with col1:
             st.subheader("📊 Shifts Spanned per Session")
-            shift_df = get_shift_span_distribution(df, selected_miner)
+            shift_df = get_shift_span_distribution(parquet_path, selected_miner)
             
             fig = px.bar(shift_df, x='shifts_spanned', y='session_count',
                         labels={'shifts_spanned': 'Shifts Spanned', 
@@ -320,7 +344,7 @@ def show_per_miner_analysis(df):
         
         with col2:
             st.subheader("⏱️ Working Hours Distribution")
-            miner_details = get_miner_details(df, selected_miner)
+            miner_details = get_miner_details(parquet_path, selected_miner)
             
             fig = px.histogram(miner_details, x='time_diff_hours', nbins=20,
                              labels={'time_diff_hours': 'Hours'},
@@ -348,14 +372,14 @@ def show_per_miner_analysis(df):
         st.download_button("📥 Download CSV", csv, 
                           f"miner_{selected_miner}_sessions.csv", "text/csv")
 
-def show_shift_span_analysis(df):
+def show_shift_span_analysis(parquet_path):
     """Display shift span analysis"""
     st.header("🔄 Shift Span Analysis")
     
     st.info("📊 This view shows how many shifts miners span during sessions")
     
-    shift_df = get_shift_span_distribution(df)
-    miner_stats_df = get_per_miner_stats(df)
+    shift_df = get_shift_span_distribution(parquet_path)
+    miner_stats_df = get_per_miner_stats(parquet_path)
     
     # Metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -452,6 +476,7 @@ def main():
         
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
+            st.cache_resource.clear()
             st.rerun()
         
         st.markdown("---")
@@ -463,11 +488,11 @@ def main():
         - Case 3: Different shifts
         """)
     
-    # Load data
+    # Load data path (not the full data)
     with st.spinner("⏳ Loading data from Google Drive..."):
-        df = load_data()
+        parquet_path = load_data_lazy()
     
-    if df is None:
+    if parquet_path is None:
         st.error("⚠️ Failed to load data")
         st.info("""
         **Troubleshooting:**
@@ -477,20 +502,22 @@ def main():
         """)
         st.stop()
     
-    st.success(f"✅ Loaded {len(df):,} rows")
+    # Get row count without loading full data
+    row_count = get_row_count(parquet_path)
+    st.success(f"✅ Loaded {row_count:,} rows")
     
     # Calculate stats
     with st.spinner("Calculating statistics..."):
-        stats_df = get_session_stats(df)
+        stats_df = get_session_stats(parquet_path)
         stats = stats_df.iloc[0]
     
     # Show selected view
     if viz_type == "Overview Dashboard":
-        show_overview_dashboard(df, stats)
+        show_overview_dashboard(parquet_path, stats)
     elif viz_type == "Per Miner Analysis":
-        show_per_miner_analysis(df)
+        show_per_miner_analysis(parquet_path)
     elif viz_type == "Shift Span Analysis":
-        show_shift_span_analysis(df)
+        show_shift_span_analysis(parquet_path)
 
 if __name__ == "__main__":
     main()
