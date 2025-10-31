@@ -58,9 +58,7 @@ def load_data_from_url():
     
     with st.spinner('Loading data from Hugging Face...'):
         try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            df = pd.read_parquet(BytesIO(response.content))
+            df = pd.read_parquet(url)
             
             st.success(f"✅ Data loaded successfully! {len(df):,} records loaded.")
             return df
