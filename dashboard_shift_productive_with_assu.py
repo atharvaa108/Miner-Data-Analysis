@@ -52,7 +52,6 @@ def get_miner_list():
     """Fetch only miner IDs without loading full dataset"""
     url = "https://huggingface.co/datasets/Atharvaaaaaaaaaa/Data/resolve/main/data.parquet"
     try:
-        # Only read miner_id column
         query = f"""
         SELECT DISTINCT miner_id 
         FROM read_parquet('{url}')
@@ -333,7 +332,8 @@ def show_data_insights_page(filtered_df):
             nbinsx=50,
             marker_color='#636EFA',
             opacity=0.7,
-            name='Sessions'
+            name='Sessions',
+            hovertemplate='<b>Hours: %{x:.2f}</b><br>Count: %{y}<extra></extra>'
         ))
         
         fig.add_vline(x=mean_hours, line_dash="dash", line_color="red", line_width=2,
@@ -346,7 +346,8 @@ def show_data_insights_page(filtered_df):
             yaxis_title="Number of Sessions",
             template='plotly_dark',
             height=400,
-            showlegend=False
+            showlegend=False,
+            hovermode='closest'
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -389,6 +390,42 @@ def show_data_insights_page(filtered_df):
         These short sessions are significantly below the median of {median_hours:.2f}h, creating a "tail" on the left side of the distribution.
         
         **Result:** The mean gets pulled down toward these short values, while the median stays stable at the true center of your data.
+        """)
+    
+    st.markdown("---")
+    
+    # Possible Reasons
+    st.markdown("#### 🔎 Possible Reasons for Short Sessions in Your Data")
+    
+    st.warning(f"""
+    **{short_sessions:,} sessions ({(short_sessions/total_sessions*100):.1f}%) are under 5 hours. These could be due to:**
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Operational Reasons:**")
+        st.markdown("""
+        - Equipment breakdowns
+        - Material shortages
+        - Scheduled maintenance
+        - Safety incidents
+        - Medical emergencies
+        - Approved early departures
+        - Training sessions
+        - Shift handovers
+        """)
+    
+    with col2:
+        st.markdown("**Data Quality Issues:**")
+        st.markdown("""
+        - Tracking device failures
+        - Signal loss underground
+        - Incomplete session logging
+        - System errors/reboots
+        - Database sync issues
+        - Manual entry errors
+        - Session fragmentation
         """)
     
     st.markdown("---")
@@ -450,6 +487,31 @@ def show_assumptions_page(filtered_df):
     
     st.markdown("---")
     
+    # Shift Definitions
+    st.markdown("#### ⏰ Shift Definitions")
+    
+    shift_col1, shift_col2 = st.columns(2)
+    
+    with shift_col1:
+        st.success("""
+        **🌅 Shift 1 (Day Shift)**
+        - Start Time: 08:00:00
+        - End Time: 20:00:00
+        - Duration: 12 hours
+        - Same calendar day
+        """)
+    
+    with shift_col2:
+        st.info("""
+        **🌙 Shift 2 (Night Shift)**
+        - Start Time: 20:00:00
+        - End Time: 08:00:00 (next day)
+        - Duration: 12 hours
+        - Crosses midnight
+        """)
+    
+    st.markdown("---")
+    
     # Statistical Methodology
     st.markdown("#### 📊 Statistical Methodology: Why Median Over Mean")
     
@@ -461,22 +523,154 @@ def show_assumptions_page(filtered_df):
         **Current Data Statistics:**
         - **Mean**: {filtered_df['hours_worked'].mean():.2f} hours
         - **Median**: {filtered_df['hours_worked'].median():.2f} hours
-        - **Skewness**: {filtered_df['hours_worked'].skew():.2f}
+        - **Skewness**: {filtered_df['hours_worked'].skew():.2f} (negative)
         - **Standard Deviation**: {filtered_df['hours_worked'].std():.2f} hours
+        
+        **What This Tells Us:**
+        - **Negative skewness** indicates a left-tailed distribution
+        - More sessions are **shorter** than the mean, pulling it down
+        - The distribution has a concentration around 8-12 hours with a tail of very short sessions
         """)
     
     with stat_col2:
         st.markdown("##### ✅ Why Median is Preferred")
         st.success("""
         **Median Advantages:**
-        1. **Outlier Resistant**: Not affected by extreme values
-        2. **Representative**: True center of the data
+        1. **Outlier Resistant**: Not affected by extreme values (0.5h or 40h sessions)
+        2. **Representative**: 50% of sessions are above, 50% below - true center
         3. **Skew Handling**: Better for non-normal distributions
-        4. **Business Context**: Aligns with actual shift patterns
+        4. **Business Context**: Aligns with actual shift completion patterns
+        
+        **When Mean Would Be Better:**
+        - If data were normally distributed (skewness ≈ 0)
+        - If outliers were meaningful and should influence the metric
+        - If calculating total resource allocation
         """)
+    
+    st.markdown("---")
+    
+    # Working Hours Calculation
+    st.markdown("#### 🕐 Working Hours Calculation")
+    
+    with st.expander("📐 **How We Calculate Actual Working Hours**", expanded=True):
+        st.markdown("""
+        **Step 1: Session Boundary Identification**
+        ```sql
+        session_start = MIN(last_ug) -- First activity timestamp
+        session_end = MAX(last_ug)   -- Last activity timestamp
+        ```
+        
+        **Step 2: Timezone Conversion**
+        - All `last_ug` timestamps are converted from UTC to America/New_York timezone
+        - This ensures accurate shift assignment based on local time
+        
+        **Step 3: Duration Calculation**
+        ```sql
+        total_minutes = EXTRACT(EPOCH FROM (session_end - session_start)) / 60
+        hours_worked = total_minutes / 60
+        ```
+        
+        **Step 4: Time Format Display**
+        - **Decimal Format**: `5.21` hours
+        - **Readable Format**: `5h 12m` (5 hours and 12 minutes)
+        
+        **Example:**
+        - Session Start: `2025-01-18 19:47:41`
+        - Session End: `2025-01-19 01:00:04`
+        - Working Hours: `5.21` hours or `5h 12m`
+        """)
+    
+    st.markdown("---")
+    
+    # Data Quality Insights
+    st.markdown("#### 🔍 Data Quality & Distribution Analysis")
+    
+    quality_col1, quality_col2 = st.columns(2)
+    
+    with quality_col1:
+        st.markdown("##### 📊 Session Distribution")
+        total = len(filtered_df)
+        st.markdown(f"""
+        **By Duration Category:**
+        - **Very Short (<5h)**: {len(filtered_df[filtered_df['hours_worked'] < 5]):,} sessions ({len(filtered_df[filtered_df['hours_worked'] < 5])/total*100:.1f}%)
+        - **Normal (5-12h)**: {len(filtered_df[(filtered_df['hours_worked'] >= 5) & (filtered_df['hours_worked'] <= 12)]):,} sessions ({len(filtered_df[(filtered_df['hours_worked'] >= 5) & (filtered_df['hours_worked'] <= 12)])/total*100:.1f}%)
+        - **Extended (12-16h)**: {len(filtered_df[(filtered_df['hours_worked'] > 12) & (filtered_df['hours_worked'] <= 16)]):,} sessions ({len(filtered_df[(filtered_df['hours_worked'] > 12) & (filtered_df['hours_worked'] <= 16)])/total*100:.1f}%)
+        - **Anomalous (>16h)**: {len(filtered_df[filtered_df['hours_worked'] > 16]):,} sessions ({len(filtered_df[filtered_df['hours_worked'] > 16])/total*100:.1f}%)
+        """)
+    
+    with quality_col2:
+        st.markdown("##### ⚠️ Interpretation")
+        st.warning("""
+        **Short Sessions Impact:**
+        - High percentage of short sessions creates negative skew
+        - These pull the mean DOWN below the median
+        - Could indicate: incomplete shifts, tracking errors, or legitimate early departures
+        
+        **Why This Matters:**
+        - Using mean would underestimate typical productivity
+        - Median better represents "normal" work patterns
+        - Management decisions should be based on median performance
+        """)
+    
+    st.markdown("---")
+    
+    # Key Assumptions
+    st.markdown("#### 📋 Key Assumptions")
+    
+    assumptions_col1, assumptions_col2 = st.columns(2)
+    
+    with assumptions_col1:
+        st.markdown("""
+        **Timezone & Time Handling:**
+        - All timestamps are converted to America/New_York (EST/EDT)
+        - Sessions can span multiple days
+        - Midnight crossing is handled automatically for night shifts
+        """)
+    
+    with assumptions_col2:
+        st.markdown("""
+        **Session Definition:**
+        - A session is defined by unique `ug_session_id`
+        - Session duration = time between first and last activity
+        - Idle time within sessions is included in working hours
+        """)
+    
+    assumptions_col3, assumptions_col4 = st.columns(2)
+    
+    with assumptions_col3:
+        st.markdown("""
+        **Shift Assignment:**
+        - Shifts are mutually exclusive (no overlap)
+        - Assignment based on maximum time overlap
+        - Ties are broken by shift_id (lower number wins)
+        """)
+    
+    with assumptions_col4:
+        st.markdown("""
+        **Data Filtering:**
+        - Only data from January 2025 onwards is included
+        - Sessions with missing shift assignments are excluded from shift-specific analysis
+        - All times are calculated to minute-level precision
+        """)
+    
+    st.markdown("---")
+    
+    # Data Quality Notes
+    st.markdown("#### ⚠️ Data Quality & Limitations")
+    
+    st.warning("""
+    **Please Note:**
+    - Sessions spanning multiple shifts are assigned to ONE shift (the one with maximum overlap)
+    - Break times and idle periods within sessions are included in working hours
+    - The system assumes continuous work between first and last activity timestamp
+    - Sessions with less than 1 minute duration may have rounding differences
+    - Daylight Saving Time transitions are handled automatically by timezone conversion
+    - **Short sessions (<5h)** may indicate incomplete data collection or early departures
+    - **Very long sessions (>16h)** should be investigated for potential tracking errors
+    """)
 
 def show_dashboard_page():
-    """Display the main dashboard page with lazy loading"""
+    """Display the main dashboard page with lazy loading and ALL graphs"""
     try:
         # LAZY LOAD: Get only metadata first
         available_months = get_available_months()
@@ -513,7 +707,7 @@ def show_dashboard_page():
         )
         
         st.sidebar.markdown("---")
-        st.sidebar.info("💡 **Tip:** Filters are applied before loading data to save memory")
+        st.sidebar.info("💡 **Tip:** Filters are applied before loading data to save memory. Hover over charts for detailed comparisons!")
         
         # LAZY LOAD: Load only filtered data
         filtered_df = get_filtered_shift_analysis(
@@ -531,32 +725,62 @@ def show_dashboard_page():
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("🔢 Total Sessions", f"{len(filtered_df):,}")
+            st.metric(
+                label="🔢 Total Sessions",
+                value=f"{len(filtered_df):,}",
+                delta=None
+            )
         
         with col2:
-            st.metric("👷 Active Miners", f"{filtered_df['miner_id'].nunique():,}")
+            st.metric(
+                label="👷 Active Miners",
+                value=f"{filtered_df['miner_id'].nunique():,}",
+                delta=None
+            )
         
         with col3:
-            st.metric("⏱️ Median Hours/Session", f"{filtered_df['hours_worked'].median():.2f}")
+            median_hours = filtered_df['hours_worked'].median()
+            st.metric(
+                label="⏱️ Median Hours/Session",
+                value=f"{median_hours:.2f}",
+                delta=None
+            )
         
         with col4:
-            st.metric("⏰ Total Work Hours", f"{filtered_df['hours_worked'].sum():,.0f}")
+            total_hours = filtered_df['hours_worked'].sum()
+            st.metric(
+                label="⏰ Total Work Hours",
+                value=f"{total_hours:,.0f}",
+                delta=None
+            )
         
         with col5:
-            st.metric("🔥 Max Working Hours", f"{filtered_df['hours_worked'].max():.2f}")
+            max_hours = filtered_df['hours_worked'].max()
+            st.metric(
+                label="🔥 Max Working Hours",
+                value=f"{max_hours:.2f}",
+                delta=None
+            )
         
         st.markdown("---")
         
-        # Aggregate for charts
+        # Prepare monthly data - aggregate to reduce memory
         monthly_productivity = filtered_df.groupby(['sort_key', 'month_year', 'assigned_shift_id'], observed=True).agg({
-            'hours_worked': ['sum', 'median'],
+            'hours_worked': ['sum', 'mean', 'median'],
             'ug_session_id': 'count',
             'miner_id': 'nunique'
         }).reset_index()
         
-        monthly_productivity.columns = ['sort_key', 'month', 'shift_id', 'total_hours', 'median_hours', 'session_count', 'unique_miners']
+        monthly_productivity.columns = ['sort_key', 'month', 'shift_id', 'total_hours', 'avg_hours', 'median_hours', 'session_count', 'unique_miners']
         monthly_productivity = monthly_productivity.sort_values('sort_key', ascending=True)
         monthly_productivity['shift_id'] = monthly_productivity['shift_id'].astype(int)
+        
+        # Readable format for median hours
+        monthly_productivity['median_hours_readable'] = monthly_productivity['median_hours'].apply(
+            lambda h: (
+                (lambda total_min: f"{total_min // 60}h {total_min % 60:02d}m")(int(round(h * 60)))
+            )
+        )
         
         # Main visualizations
         tab1, tab2 = st.tabs(["📊 Productivity Trends", "📋 Detailed Analysis"])
@@ -568,8 +792,8 @@ def show_dashboard_page():
             
             with col_left:
                 fig1 = go.Figure()
-                colors = px.colors.qualitative.Set2
                 
+                colors = px.colors.qualitative.Set2
                 for idx, shift in enumerate(sorted(monthly_productivity['shift_id'].unique())):
                     shift_data = monthly_productivity[monthly_productivity['shift_id'] == shift]
                     fig1.add_trace(go.Scatter(
@@ -579,15 +803,35 @@ def show_dashboard_page():
                         mode='lines+markers',
                         marker=dict(size=10),
                         line=dict(width=3),
-                        marker_color=colors[idx % len(colors)]
+                        marker_color=colors[idx % len(colors)],
+                        customdata=shift_data[['session_count', 'unique_miners']],
+                        hovertemplate='<b>%{x}</b><br>' +
+                                      'Total Hours: <b>%{y:,.1f}</b><br>' +
+                                      'Sessions: %{customdata[0]:,}<br>' +
+                                      'Active Miners: %{customdata[1]:,}<br>' +
+                                      '<extra></extra>'
                     ))
                 
                 fig1.update_layout(
-                    title='🔥 Total Work Hours by Month',
+                    title={
+                        'text': '🔥 Total Work Hours by Month',
+                        'font': {'size': 18, 'color': 'white'}
+                    },
                     xaxis_title='Month',
                     yaxis_title='Total Work Hours',
+                    hovermode='x unified',
                     template='plotly_dark',
-                    height=400
+                    height=400,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    font=dict(color='white'),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 
                 st.plotly_chart(fig1, use_container_width=True)
@@ -604,74 +848,201 @@ def show_dashboard_page():
                         mode='lines+markers',
                         marker=dict(size=10),
                         line=dict(width=3, dash='dot'),
-                        marker_color=colors[idx % len(colors)]
+                        marker_color=colors[idx % len(colors)],
+                        customdata=shift_data[['median_hours_readable', 'session_count', 'avg_hours']],
+                        hovertemplate='<b>%{x}</b><br>' +
+                                      'Median Hours: <b>%{customdata[0]}</b><br>' +
+                                      'Avg Hours: %{customdata[2]:.2f}<br>' +
+                                      'Sessions: %{customdata[1]:,}<br>' +
+                                      '<extra></extra>'
                     ))
                 
                 fig2.update_layout(
-                    title='⚡ Median Hours per Session',
+                    title={
+                        'text': '⚡ Median Hours per Session',
+                        'font': {'size': 18, 'color': 'white'}
+                    },
                     xaxis_title='Month',
                     yaxis_title='Median Hours',
+                    hovermode='x unified',
                     template='plotly_dark',
-                    height=400
+                    height=400,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    font=dict(color='white'),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 
                 st.plotly_chart(fig2, use_container_width=True)
+            
+            st.markdown("#### 📊 Multi-Metric Analysis")
+            
+            fig_combined = make_subplots(
+                rows=1, cols=2,
+                subplot_titles=('Session Count Trend', 'Active Miners Trend'),
+                specs=[[{"secondary_y": False}, {"secondary_y": False}]]
+            )
+            
+            for idx, shift in enumerate(sorted(monthly_productivity['shift_id'].unique())):
+                shift_data = monthly_productivity[monthly_productivity['shift_id'] == shift]
+                
+                fig_combined.add_trace(
+                    go.Bar(
+                        x=shift_data['month'],
+                        y=shift_data['session_count'],
+                        name=f'Shift {int(shift)}',
+                        marker_color=colors[idx % len(colors)],
+                        customdata=shift_data[['total_hours', 'median_hours_readable']],
+                        hovertemplate='<b>%{x}</b><br>' +
+                                      'Session Count: <b>%{y:,}</b><br>' +
+                                      'Total Hours: %{customdata[0]:,.1f}<br>' +
+                                      'Median: %{customdata[1]}<br>' +
+                                      '<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+                
+                fig_combined.add_trace(
+                    go.Scatter(
+                        x=shift_data['month'],
+                        y=shift_data['unique_miners'],
+                        name=f'Shift {int(shift)}',
+                        mode='lines+markers',
+                        marker=dict(size=8),
+                        line=dict(width=2.5),
+                        marker_color=colors[idx % len(colors)],
+                        showlegend=False,
+                        customdata=shift_data[['session_count', 'total_hours']],
+                        hovertemplate='<b>%{x}</b><br>' +
+                                      'Active Miners: <b>%{y:,}</b><br>' +
+                                      'Sessions: %{customdata[0]:,}<br>' +
+                                      'Total Hours: %{customdata[1]:,.1f}<br>' +
+                                      '<extra></extra>'
+                    ),
+                    row=1, col=2
+                )
+            
+            fig_combined.update_xaxes(title_text="Month", row=1, col=1)
+            fig_combined.update_xaxes(title_text="Month", row=1, col=2)
+            fig_combined.update_yaxes(title_text="Number of Sessions", row=1, col=1)
+            fig_combined.update_yaxes(title_text="Number of Miners", row=1, col=2)
+            
+            fig_combined.update_layout(
+                height=450,
+                template='plotly_dark',
+                hovermode='x unified',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.2,
+                    xanchor="center",
+                    x=0.5
+                ),
+                font=dict(color='white'),
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
+            fig_combined.update_annotations(font=dict(color='white'))
+            
+            st.plotly_chart(fig_combined, use_container_width=True)
         
         with tab2:
             st.markdown("### 📋 Detailed Data Analysis")
             
-            show_detail = st.checkbox("Show individual records (may load slowly)", value=False)
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown("#### 📊 Monthly Shift Summary")
+            
+            with col2:
+                show_detail = st.checkbox("Show individual records", value=False)
             
             if show_detail:
-                # Limit display
-                display_limit = min(5000, len(filtered_df))
+                # Limit rows to prevent memory issues
+                display_limit = min(10000, len(filtered_df))
                 if len(filtered_df) > display_limit:
-                    st.warning(f"⚠️ Showing first {display_limit:,} of {len(filtered_df):,} records")
+                    st.warning(f"⚠️ Showing first {display_limit:,} of {len(filtered_df):,} records to prevent memory issues")
+                    display_df = filtered_df.head(display_limit)
+                else:
+                    display_df = filtered_df
                 
-                display_df = filtered_df.head(display_limit)[['miner_id', 'assigned_shift_id', 'session_start', 
-                                                               'session_end', 'hours_worked', 'hours_worked_readable']].copy()
-                display_df.columns = ['Miner ID', 'Shift ID', 'Session Start', 'Session End', 'Work Hours', 'Work Duration']
-                st.dataframe(display_df, use_container_width=True, height=400)
+                display_df = display_df[['miner_id', 'assigned_shift_id', 'session_start', 'session_end', 
+                                          'hours_worked', 'hours_worked_readable', 'month_year']].copy()
+                display_df.columns = ['Miner ID', 'Shift ID', 'Session Start', 'Session End', 
+                                      'Work Hours', 'Work Duration', 'Month']
+                display_df = display_df.sort_values(['Session Start', 'Miner ID'], ascending=[False, True])
+                st.dataframe(display_df, use_container_width=True, height=500)
             else:
-                summary_df = filtered_df.groupby(['month_year', 'assigned_shift_id'], observed=True).agg({
-                    'hours_worked': ['sum', 'mean', 'median', 'count'],
+                summary_df = filtered_df.groupby(['sort_key', 'month_year', 'assigned_shift_id'], observed=True).agg({
+                    'hours_worked': ['sum', 'mean', 'median', 'std', 'count'],
                     'miner_id': 'nunique'
                 }).reset_index()
                 
-                summary_df.columns = ['Month', 'Shift ID', 'Total Hours', 'Avg Hours', 'Median Hours', 'Session Count', 'Unique Miners']
+                summary_df.columns = ['sort_key', 'Month', 'Shift ID', 'Total Hours', 'Avg Hours', 
+                                     'Median Hours', 'Std Dev', 'Session Count', 'Unique Miners']
+                summary_df['Shift ID'] = summary_df['Shift ID'].astype(int)
                 summary_df = summary_df.round(2)
-                st.dataframe(summary_df, use_container_width=True, height=400)
+                summary_df = summary_df.sort_values('sort_key', ascending=False)
+                summary_df = summary_df.drop('sort_key', axis=1)
+                
+                st.dataframe(summary_df, use_container_width=True, height=500)
             
             st.markdown("---")
             st.markdown("#### 💾 Export Data")
             
-            csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Filtered Data",
-                data=csv_data,
-                file_name=f'miner_productivity_{selected_month_display}_{selected_shift}.csv',
-                mime='text/csv'
-            )
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                csv_filtered = filtered_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Filtered Data",
+                    data=csv_filtered,
+                    file_name=f'miner_productivity_{selected_month_display}_{selected_shift}.csv',
+                    mime='text/csv'
+                )
+            
+            with col2:
+                if not show_detail:
+                    csv_summary = summary_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Summary",
+                        data=csv_summary,
+                        file_name=f'productivity_summary_{selected_month_display}.csv',
+                        mime='text/csv'
+                    )
 
+    except FileNotFoundError as e:
+        st.error("⚠️ **Data file not found or could not be loaded**")
+        st.info("Please ensure the Hugging Face file is publicly accessible.")
+        with st.expander("🔍 View Error Details"):
+            st.code(str(e))
     except Exception as e:
         st.error(f"⚠️ **An error occurred:** {str(e)}")
+        st.info("Please check your data file and query configuration.")
         with st.expander("🔍 View Error Details"):
-            import traceback
-            st.code(traceback.format_exc())
+            st.code(str(e))
 
 # ---------------------------
-# Main App Logic
+# Main App Logic with Page Selection
 # ---------------------------
 
 def main():
     """Main application logic"""
+    # Initialize session state for page navigation
     if 'page' not in st.session_state:
         st.session_state.page = 'Dashboard'
 
+    # Title and description
     st.title("⛏️ Miner Shift Productivity Dashboard")
     st.markdown("### 📊 Memory-Optimized with Lazy Loading")
 
-    # Page navigation
+    # Page selection in sidebar
     st.sidebar.markdown("---")
     st.sidebar.markdown("## 📄 Navigation")
     page = st.sidebar.radio(
@@ -680,6 +1051,7 @@ def main():
         index=0 if st.session_state.page == 'Dashboard' else (1 if st.session_state.page == 'Assumptions' else 2)
     )
 
+    # Update session state
     if page == "📊 Dashboard":
         st.session_state.page = 'Dashboard'
     elif page == "📖 Assumptions & Methodology":
@@ -689,22 +1061,22 @@ def main():
 
     st.markdown("---")
 
-    # Display pages
+    # Display the selected page
     try:
         if st.session_state.page == 'Dashboard':
             show_dashboard_page()
         elif st.session_state.page == 'Assumptions':
             # Load minimal data for assumptions page
-            st.sidebar.info("Loading sample data for methodology display...")
-            selected_month = "All Months"
-            filtered_df = get_filtered_shift_analysis(month_filter=selected_month)
-            show_assumptions_page(filtered_df)
+            result_df = get_filtered_shift_analysis(month_filter="All Months")
+            show_assumptions_page(result_df)
         else:  # Insights page
             # Load minimal data for insights
-            st.sidebar.info("Loading sample data for insights display...")
-            selected_month = "All Months"
-            filtered_df = get_filtered_shift_analysis(month_filter=selected_month)
-            show_data_insights_page(filtered_df)
+            result_df = get_filtered_shift_analysis(month_filter="All Months")
+            show_data_insights_page(result_df)
+    except FileNotFoundError as e:
+        st.error("⚠️ **Data file not found or failed to load**")
+        st.info("Please check if the Hugging Face file is publicly accessible.")
+        st.error(f"Error details: {str(e)}")
     except Exception as e:
         st.error(f"⚠️ **An error occurred:** {str(e)}")
         st.info("Please check the error details below.")
