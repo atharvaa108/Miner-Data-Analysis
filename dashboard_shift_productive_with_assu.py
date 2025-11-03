@@ -1040,7 +1040,6 @@ def main():
 
     # Title and description
     st.title("⛏️ Miner Shift Productivity Dashboard")
-    st.markdown("### 📊 Memory-Optimized with Lazy Loading")
 
     # Page selection in sidebar
     st.sidebar.markdown("---")
