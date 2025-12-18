@@ -4,6 +4,7 @@ from pathlib import Path
 
 _root = Path(__file__).resolve().parents[1]
 
+#### The file miner_all.parquet is created by single_miner in the check_in.parquet ####
 file_path = f"{_root}/data/miner_all.parquet"
 
 df = pd.read_parquet(file_path)
